@@ -113,6 +113,10 @@ KeePwn `parse_dump` module will search for potential master password candidates 
 
 ![](./.github/images/keepwn_parse_dump_example.png)
 
+KeePwn now supports the recovery of UTF-8 encoded master passwords.
+
+![](./.github/images/keepwn_parse_dump_utf.png)
+
 The memory dump parsing makes use of [@CMEPW's Python PoC](https://github.com/CMEPW/keepass-dump-masterkey). Thanks for letting me re-use the code :)
 
 ## Contribute

